@@ -157,7 +157,9 @@ app.post('/api/transcribe', async (req, res) => {
 
   try {
     const buffer = Buffer.from(audioBase64, 'base64');
-    const type = typeof mimeType === 'string' && mimeType ? mimeType : 'audio/webm';
+    // Normalizar mimeType (MediaRecorder suele enviar "audio/webm;codecs=opus")
+    const rawType = (typeof mimeType === 'string' && mimeType ? mimeType : 'audio/webm').trim();
+    const type = rawType.split(';')[0].trim() || 'audio/webm';
     const ext = type.includes('mp3') ? 'mp3' : type.includes('wav') ? 'wav' : type.includes('ogg') ? 'ogg' : 'webm';
     const form = new FormData();
     form.append('file', buffer, { filename: `audio.${ext}`, contentType: type });
