@@ -76,10 +76,24 @@ export default function EnglishConversationApp() {
     setShowVoiceMenu(false);
   };
 
+  const recheckBackend = () => {
+    const base = (apiBase || '').trim() || DEFAULT_BACKEND;
+    const checkUrl = `${base.replace(/\/$/, '')}/api/check-key`;
+    fetch(checkUrl)
+      .then(res => res.json())
+      .then(data => {
+        setHasApiKey(data.hasKey || !!localStorage.getItem('english-conv-xai-key'));
+        setUseBackend(!!data.hasKey);
+      })
+      .catch(() => {
+        setUseBackend(false);
+      });
+  };
+
   useEffect(() => {
     const localKey = localStorage.getItem('english-conv-xai-key');
-    const base = apiBase || '';
-    const checkUrl = base ? `${base.replace(/\/$/, '')}/api/check-key` : '/api/check-key';
+    const base = (apiBase || '').trim() || DEFAULT_BACKEND;
+    const checkUrl = `${base.replace(/\/$/, '')}/api/check-key`;
     
     fetch(checkUrl)
       .then(res => res.json())
@@ -100,12 +114,13 @@ export default function EnglishConversationApp() {
     setKeyError('');
     const key = apiKeyInput.trim();
     try {
-      const base = apiBase || '';
-      const saveUrl = base ? `${base.replace(/\/$/, '')}/api/save-key` : '/api/save-key';
+      const base = (apiBase || '').trim() || DEFAULT_BACKEND;
+      const saveUrl = `${base.replace(/\/$/, '')}/api/save-key`;
+      const provider = key.startsWith('gsk_') ? 'groq' : key.startsWith('AIza') ? 'gemini' : 'groq';
       const res = await fetch(saveUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ apiKey: key, provider: 'gemini' }),
+        body: JSON.stringify({ apiKey: key, provider }),
       });
       const data = await res.json();
       if (data.success) {
@@ -141,18 +156,21 @@ export default function EnglishConversationApp() {
       ];
 
       if (!useBackend) {
-      const backendMsg = `⚠️ **Se necesita un backend** para conectar con Grok (la API no permite llamadas directas desde el navegador).
+      const backendMsg = `⚠️ **Se necesita un backend** (la API no permite llamadas directas desde el navegador).
 
-**Opciones:**
-1. **Plan Blaze en Firebase** – Activa Blaze y vuelve a desplegar.
-2. **Render (gratis)** – Despliega \`server.js\` en render.com y pega la URL en Ajustes.`;
+**La forma más rápida – Groq (gratis, sin restricciones):**
+1. https://console.groq.com/keys – crea una API key (gratis, sin tarjeta)
+2. Render → tu servicio → Environment → añade \`GROQ_API_KEY\` = tu clave
+3. Redeploy → **Ajustes** → **Revisar conexión**
+
+**Alternativa – Gemini:** \`GEMINI_API_KEY\` en Render (aistudio.google.com/apikey)`;
       setMessages(prev => [...prev, { role: 'assistant', content: backendMsg }]);
       setIsLoading(false);
       return;
     }
 
-      const base = apiBase || '';
-      const chatUrl = base ? `${base.replace(/\/$/, '')}/api/chat` : '/api/chat';
+      const base = (apiBase || '').trim() || DEFAULT_BACKEND;
+      const chatUrl = `${base.replace(/\/$/, '')}/api/chat`;
       const response = await fetch(chatUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -169,14 +187,12 @@ export default function EnglishConversationApp() {
       }
 
       if (!response.ok && (response.status === 400 || response.status === 403)) {
-        const apiMsg = data.error?.message || '';
-        assistantMessage = `⚠️ **Error ${response.status} – API key o cuenta xAI**
+        const apiMsg = data.error?.message || data.error?.error?.message || data.message || '';
+        assistantMessage = `⚠️ **Error ${response.status} – API key**
 
-${apiMsg ? `Detalle: ${apiMsg}\n\n` : ''}**Revisa:**
-1. https://console.x.ai – inicia sesión
-2. **Credits** – necesitas cargar créditos (la API es de pago)
-3. https://console.x.ai/team/default/api-keys – crea o verifica tu API key
-4. Render → Environment → XAI_API_KEY debe coincidir con la key de xAI`;
+${apiMsg ? `**Detalle:** ${apiMsg}\n\n` : ''}        **Solución más rápida – usa Groq:**
+1. https://console.groq.com/keys – crea una key (gratis, sin tarjeta)
+2. Render → Environment → añade \`GROQ_API_KEY\` = tu clave → redeploy`;
       }
 
       setMessages(prev => [...prev, { role: 'assistant', content: assistantMessage }]);
@@ -287,7 +303,7 @@ ${apiMsg ? `Detalle: ${apiMsg}\n\n` : ''}**Revisa:**
             </div>
             <div>
               <h1 className="text-xl font-semibold text-slate-900 tracking-tight">Configuración</h1>
-              <p className="text-sm text-slate-500">API key de Google Gemini (gratis) o xAI (Grok)</p>
+              <p className="text-sm text-slate-500">Groq (recomendado) o Gemini · Ambos gratis</p>
             </div>
           </div>
           <form onSubmit={handleSaveApiKey} className="space-y-5">
@@ -295,7 +311,7 @@ ${apiMsg ? `Detalle: ${apiMsg}\n\n` : ''}**Revisa:**
               type="password"
               value={apiKeyInput}
               onChange={(e) => setApiKeyInput(e.target.value)}
-              placeholder="sk-..."
+              placeholder="gsk_... (Groq) o AIza... (Gemini)"
               className="w-full px-4 py-3.5 rounded-xl border border-slate-200 bg-slate-50/50 text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-900/20 focus:border-slate-400 transition-all"
               disabled={savingKey}
               autoFocus
@@ -312,14 +328,14 @@ ${apiMsg ? `Detalle: ${apiMsg}\n\n` : ''}**Revisa:**
           <p className="text-xs text-slate-500 mt-3 text-center">
             Si usas Firebase Hosting, configura la URL del backend (Render) en Ajustes.
           </p>
-          <a
-            href="https://aistudio.google.com/apikey"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="block text-center text-sm text-slate-600 hover:text-slate-900 mt-6 transition-colors"
-          >
-            Obtener API key Gemini (gratis) →
-          </a>
+          <div className="flex gap-4 justify-center mt-6 flex-wrap">
+            <a href="https://console.groq.com/keys" target="_blank" rel="noopener noreferrer" className="text-sm text-slate-600 hover:text-slate-900 transition-colors">
+              Groq (gratis, recomendado) →
+            </a>
+            <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener noreferrer" className="text-sm text-slate-600 hover:text-slate-900 transition-colors">
+              Gemini (gratis) →
+            </a>
+          </div>
         </div>
       </div>
     );
@@ -348,7 +364,7 @@ ${apiMsg ? `Detalle: ${apiMsg}\n\n` : ''}**Revisa:**
                   English Conversation
                 </h1>
                 <p className="text-xs text-slate-500">
-                  Practice with AI · Powered by Gemini
+                  Practice with AI · Groq o Gemini
                 </p>
               </div>
             </div>
@@ -386,6 +402,13 @@ ${apiMsg ? `Detalle: ${apiMsg}\n\n` : ''}**Revisa:**
                         placeholder="https://tu-app.onrender.com"
                         className="w-full px-2 py-1.5 text-xs border border-slate-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-slate-400"
                       />
+                      <button
+                        type="button"
+                        onClick={recheckBackend}
+                        className="mt-2 w-full py-2 text-xs font-medium text-slate-600 hover:text-slate-900 hover:bg-slate-50 rounded-lg transition-colors"
+                      >
+                        {useBackend ? '✓ Conectado' : 'Revisar conexión'}
+                      </button>
                     </div>
                     <button
                       onClick={() => handleVoiceChange('female')}

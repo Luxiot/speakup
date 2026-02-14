@@ -23,8 +23,10 @@ app.use((req, res, next) => {
 
 const envPath = path.join(__dirname, '.env');
 
-// Leer API key: Gemini (gratis) o xAI (Grok)
+// Prioridad: Groq (gratis, sin restricciones) > Gemini > xAI
 function getApiKey() {
+  const groq = process.env.GROQ_API_KEY;
+  if (groq) return { key: groq.trim(), provider: 'groq' };
   const gemini = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
   if (gemini) return { key: gemini.trim(), provider: 'gemini' };
   const xai = process.env.XAI_API_KEY || process.env.VITE_XAI_API_KEY;
@@ -32,6 +34,8 @@ function getApiKey() {
   try {
     if (fs.existsSync(envPath)) {
       const content = fs.readFileSync(envPath, 'utf-8');
+      const q = content.match(/GROQ_API_KEY=(.+)/);
+      if (q) return { key: q[1].trim().replace(/^["']|["']$/g, ''), provider: 'groq' };
       const g = content.match(/GEMINI_API_KEY=(.+)/);
       if (g) return { key: g[1].trim().replace(/^["']|["']$/g, ''), provider: 'gemini' };
       const x = content.match(/VITE_XAI_API_KEY=(.+)/);
@@ -43,15 +47,14 @@ function getApiKey() {
   return null;
 }
 
-// Guardar API key en .env (Gemini por defecto - gratis)
-function saveApiKey(apiKey, provider = 'gemini') {
+function saveApiKey(apiKey, provider = 'groq') {
   try {
     let content = '';
     if (fs.existsSync(envPath)) {
       content = fs.readFileSync(envPath, 'utf-8');
-      content = content.replace(/GEMINI_API_KEY=.*\n?/g, '').replace(/VITE_XAI_API_KEY=.*\n?/g, '');
+      content = content.replace(/GROQ_API_KEY=.*\n?/g, '').replace(/GEMINI_API_KEY=.*\n?/g, '').replace(/VITE_XAI_API_KEY=.*\n?/g, '');
     }
-    const varName = provider === 'gemini' ? 'GEMINI_API_KEY' : 'VITE_XAI_API_KEY';
+    const varName = provider === 'groq' ? 'GROQ_API_KEY' : provider === 'gemini' ? 'GEMINI_API_KEY' : 'VITE_XAI_API_KEY';
     content += `${varName}=${apiKey}\n`;
     fs.writeFileSync(envPath, content.trim() + '\n');
     return true;
@@ -67,7 +70,7 @@ app.get('/api/check-key', (req, res) => {
   res.json({ hasKey: !!api, provider: api?.provider });
 });
 
-// Guardar API key (provider: 'gemini' | 'xai')
+// Guardar API key (provider: 'groq' | 'gemini' | 'xai')
 app.post('/api/save-key', (req, res) => {
   const { apiKey, provider = 'gemini' } = req.body;
   if (!apiKey || typeof apiKey !== 'string') {
@@ -94,21 +97,19 @@ app.post('/api/chat', async (req, res) => {
   const { key, provider } = api;
   let url, headers, body;
 
-  if (provider === 'gemini') {
+  if (provider === 'groq') {
+    url = 'https://api.groq.com/openai/v1/chat/completions';
+    headers = { 'Content-Type': 'application/json', 'Authorization': `Bearer ${key}` };
+    const { messages, max_tokens } = req.body;
+    body = { model: 'llama-3.3-70b-versatile', messages, max_tokens: max_tokens || 1000 };
+  } else if (provider === 'gemini') {
     url = `https://generativelanguage.googleapis.com/v1beta/openai/chat/completions?key=${key}`;
     headers = { 'Content-Type': 'application/json' };
     const { messages, max_tokens } = req.body;
-    body = {
-      model: 'gemini-2.0-flash',
-      messages,
-      max_tokens: max_tokens || 1000,
-    };
+    body = { model: 'gemini-1.5-flash', messages, max_tokens: max_tokens || 1000 };
   } else {
     url = 'https://api.x.ai/v1/chat/completions';
-    headers = {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${key}`,
-    };
+    headers = { 'Content-Type': 'application/json', 'Authorization': `Bearer ${key}` };
     body = req.body;
   }
 
