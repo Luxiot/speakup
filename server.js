@@ -2,7 +2,6 @@ import express from 'express';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import FormData from 'form-data';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -159,31 +158,37 @@ app.post('/api/transcribe', async (req, res) => {
     const buffer = Buffer.from(audioBase64, 'base64');
     const rawType = (typeof mimeType === 'string' && mimeType ? mimeType : 'audio/webm').trim();
     const type = rawType.split(';')[0].trim() || 'audio/webm';
-    const ext = type.includes('mp3') ? 'mp3' : type.includes('wav') ? 'wav' : type.includes('ogg') ? 'ogg' : 'webm';
+    // FormData nativo (Node 18+) + Blob: mismo formato que el navegador
     const form = new FormData();
-    // Sin contentType para evitar conflictos con Groq
-    form.append('file', buffer, { filename: `audio.${ext}` });
+    form.append('file', new Blob([buffer], { type }), 'audio.webm');
     form.append('model', 'whisper-large-v3-turbo');
     form.append('response_format', 'json');
     form.append('language', 'en');
 
     const response = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
       method: 'POST',
-      headers: { ...form.getHeaders(), 'Authorization': `Bearer ${key}` },
+      headers: { 'Authorization': `Bearer ${key}` },
       body: form,
     });
 
-    const data = await response.json();
+    let data = null;
+    try {
+      data = await response.json();
+    } catch {
+      const raw = await response.text().catch(() => '');
+      console.error('groq transcribe parse error:', response.status, raw?.slice(0, 300));
+      return res.status(response.status).json({ error: { message: raw || `Error ${response.status}` }, text: '' });
+    }
     if (!response.ok) {
       console.error('groq transcribe error:', response.status, data);
-      const errMsg = data?.error?.message || data?.message || JSON.stringify(data);
+      const errMsg = data?.error?.message || data?.message || (typeof data?.error === 'string' ? data.error : '') || JSON.stringify(data);
       return res.status(response.status).json({ error: { message: errMsg }, text: '' });
     }
 
     return res.json({ text: data.text || '' });
   } catch (e) {
     console.error('transcribe error:', e);
-    return res.status(500).json({ error: { message: 'Error transcribiendo audio' } });
+    return res.status(500).json({ error: { message: e.message || 'Error transcribiendo audio' } });
   }
 });
 

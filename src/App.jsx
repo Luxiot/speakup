@@ -413,9 +413,10 @@ export default function EnglishConversationApp() {
         const raw = await res.text().catch(() => '');
         throw new Error(raw ? raw.slice(0, 200) : `Respuesta inválida (HTTP ${res.status})`);
       }
-      const text = (data.text || data.error?.message || '').trim();
-      if (!res.ok) throw new Error(text || `Error ${res.status}`);
-      if (!text) throw new Error('No se pudo transcribir');
+      const errMsg = (data?.error?.message ?? data?.message ?? (typeof data?.error === 'string' ? data.error : '')).trim();
+      if (!res.ok) throw new Error(errMsg || `Error ${res.status}`);
+      const text = (data.text || '').trim();
+      if (!text) throw new Error(errMsg || 'No se pudo transcribir');
 
       // Actualizar el bubble del audio con la transcripción
       setMessages(prev => prev.map(m => m.id === audioMessageId ? { ...m, content: text } : m));
