@@ -105,7 +105,7 @@ export default function EnglishConversationApp() {
       const res = await fetch(saveUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ apiKey: key }),
+        body: JSON.stringify({ apiKey: key, provider: 'gemini' }),
       });
       const data = await res.json();
       if (data.success) {
@@ -168,12 +168,15 @@ export default function EnglishConversationApp() {
           : (data.error?.message || `Error ${response.status}. Verifica tu API key.`);
       }
 
-      if (!response.ok && response.status === 400) {
-        assistantMessage = `⚠️ **Error 400 – API key inválida o sin créditos**
+      if (!response.ok && (response.status === 400 || response.status === 403)) {
+        const apiMsg = data.error?.message || '';
+        assistantMessage = `⚠️ **Error ${response.status} – API key o cuenta xAI**
 
-• https://console.x.ai/team/default/api-keys – revisa tu API key
-• Asegúrate de tener créditos en tu cuenta xAI
-• En Render → Environment → verifica XAI_API_KEY (sin espacios)`;
+${apiMsg ? `Detalle: ${apiMsg}\n\n` : ''}**Revisa:**
+1. https://console.x.ai – inicia sesión
+2. **Credits** – necesitas cargar créditos (la API es de pago)
+3. https://console.x.ai/team/default/api-keys – crea o verifica tu API key
+4. Render → Environment → XAI_API_KEY debe coincidir con la key de xAI`;
       }
 
       setMessages(prev => [...prev, { role: 'assistant', content: assistantMessage }]);
@@ -284,7 +287,7 @@ export default function EnglishConversationApp() {
             </div>
             <div>
               <h1 className="text-xl font-semibold text-slate-900 tracking-tight">Configuración</h1>
-              <p className="text-sm text-slate-500">Ingresa tu API key de xAI (Grok)</p>
+              <p className="text-sm text-slate-500">API key de Google Gemini (gratis) o xAI (Grok)</p>
             </div>
           </div>
           <form onSubmit={handleSaveApiKey} className="space-y-5">
@@ -310,12 +313,12 @@ export default function EnglishConversationApp() {
             Si usas Firebase Hosting, configura la URL del backend (Render) en Ajustes.
           </p>
           <a
-            href="https://console.x.ai/team/default/api-keys"
+            href="https://aistudio.google.com/apikey"
             target="_blank"
             rel="noopener noreferrer"
             className="block text-center text-sm text-slate-600 hover:text-slate-900 mt-6 transition-colors"
           >
-            Obtener API key en xAI →
+            Obtener API key Gemini (gratis) →
           </a>
         </div>
       </div>
@@ -345,7 +348,7 @@ export default function EnglishConversationApp() {
                   English Conversation
                 </h1>
                 <p className="text-xs text-slate-500">
-                  Practice with AI · Powered by Grok
+                  Practice with AI · Powered by Gemini
                 </p>
               </div>
             </div>

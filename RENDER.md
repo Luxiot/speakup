@@ -37,7 +37,7 @@ git push -u origin main
 
 1. En tu servicio → **Environment**  
 2. **Add Environment Variable**  
-3. `XAI_API_KEY` = tu API key de xAI (Grok)  
+3. `GEMINI_API_KEY` = tu API key de Google (https://aistudio.google.com/apikey) – **GRATIS**  
 4. Guarda  
 
 ## 5. Deploy

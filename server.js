@@ -23,15 +23,19 @@ app.use((req, res, next) => {
 
 const envPath = path.join(__dirname, '.env');
 
-// Leer API key: primero env vars (Railway), luego .env
+// Leer API key: Gemini (gratis) o xAI (Grok)
 function getApiKey() {
-  const fromEnv = process.env.XAI_API_KEY || process.env.VITE_XAI_API_KEY;
-  if (fromEnv) return fromEnv.trim();
+  const gemini = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+  if (gemini) return { key: gemini.trim(), provider: 'gemini' };
+  const xai = process.env.XAI_API_KEY || process.env.VITE_XAI_API_KEY;
+  if (xai) return { key: xai.trim(), provider: 'xai' };
   try {
     if (fs.existsSync(envPath)) {
       const content = fs.readFileSync(envPath, 'utf-8');
-      const match = content.match(/VITE_XAI_API_KEY=(.+)/);
-      if (match) return match[1].trim().replace(/^["']|["']$/g, '');
+      const g = content.match(/GEMINI_API_KEY=(.+)/);
+      if (g) return { key: g[1].trim().replace(/^["']|["']$/g, ''), provider: 'gemini' };
+      const x = content.match(/VITE_XAI_API_KEY=(.+)/);
+      if (x) return { key: x[1].trim().replace(/^["']|["']$/g, ''), provider: 'xai' };
     }
   } catch (e) {
     console.error(e);
@@ -39,15 +43,16 @@ function getApiKey() {
   return null;
 }
 
-// Guardar API key en .env
-function saveApiKey(apiKey) {
+// Guardar API key en .env (Gemini por defecto - gratis)
+function saveApiKey(apiKey, provider = 'gemini') {
   try {
     let content = '';
     if (fs.existsSync(envPath)) {
       content = fs.readFileSync(envPath, 'utf-8');
-      content = content.replace(/VITE_XAI_API_KEY=.*\n?/g, '');
+      content = content.replace(/GEMINI_API_KEY=.*\n?/g, '').replace(/VITE_XAI_API_KEY=.*\n?/g, '');
     }
-    content += `VITE_XAI_API_KEY=${apiKey}\n`;
+    const varName = provider === 'gemini' ? 'GEMINI_API_KEY' : 'VITE_XAI_API_KEY';
+    content += `${varName}=${apiKey}\n`;
     fs.writeFileSync(envPath, content.trim() + '\n');
     return true;
   } catch (e) {
@@ -58,13 +63,13 @@ function saveApiKey(apiKey) {
 
 // Verificar si hay API key configurada
 app.get('/api/check-key', (req, res) => {
-  const key = getApiKey();
-  res.json({ hasKey: !!key });
+  const api = getApiKey();
+  res.json({ hasKey: !!api, provider: api?.provider });
 });
 
-// Guardar API key
+// Guardar API key (provider: 'gemini' | 'xai')
 app.post('/api/save-key', (req, res) => {
-  const { apiKey } = req.body;
+  const { apiKey, provider = 'gemini' } = req.body;
   if (!apiKey || typeof apiKey !== 'string') {
     return res.status(400).json({ success: false, message: 'API key requerida' });
   }
@@ -72,41 +77,60 @@ app.post('/api/save-key', (req, res) => {
   if (!trimmed) {
     return res.status(400).json({ success: false, message: 'API key no puede estar vacía' });
   }
-  if (saveApiKey(trimmed)) {
-    res.json({ success: true, message: 'API key guardada en .env' });
+  if (saveApiKey(trimmed, provider)) {
+    res.json({ success: true, message: 'API key guardada', provider });
   } else {
     res.status(500).json({ success: false, message: 'Error al guardar' });
   }
 });
 
-// Proxy para Grok API (la key se lee del .env)
+// Proxy para Gemini (gratis) o Grok API
 app.post('/api/chat', async (req, res) => {
-  const apiKey = getApiKey();
-  if (!apiKey) {
+  const api = getApiKey();
+  if (!api) {
     return res.status(401).json({ error: { message: 'Configura tu API key primero' } });
   }
 
+  const { key, provider } = api;
+  let url, headers, body;
+
+  if (provider === 'gemini') {
+    url = `https://generativelanguage.googleapis.com/v1beta/openai/chat/completions?key=${key}`;
+    headers = { 'Content-Type': 'application/json' };
+    const { messages, max_tokens } = req.body;
+    body = {
+      model: 'gemini-2.0-flash',
+      messages,
+      max_tokens: max_tokens || 1000,
+    };
+  } else {
+    url = 'https://api.x.ai/v1/chat/completions';
+    headers = {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${key}`,
+    };
+    body = req.body;
+  }
+
   try {
-    const response = await fetch('https://api.x.ai/v1/chat/completions', {
+    const response = await fetch(url, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify(req.body),
+      headers,
+      body: JSON.stringify(body),
     });
 
     const data = await response.json();
 
     if (!response.ok) {
+      console.error(`${provider} API error:`, response.status, data);
       return res.status(response.status).json(data);
     }
 
     res.json(data);
   } catch (error) {
-    console.error('Error Grok API:', error);
+    console.error(`Error ${provider} API:`, error);
     res.status(500).json({
-      error: { message: 'Error de conexión con Grok. Intenta de nuevo.' },
+      error: { message: 'Error de conexión. Intenta de nuevo.' },
     });
   }
 });
