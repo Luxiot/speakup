@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: speakup-api
+    env: node
+    buildCommand: npm install
+    startCommand: node server.js
+    envVars:
+      - key: XAI_API_KEY
+        sync: false
