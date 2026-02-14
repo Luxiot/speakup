@@ -2,15 +2,17 @@ import express from 'express';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import FormData from 'form-data';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-app.use(express.json());
+// Necesario para recibir audio en base64 (nota de voz)
+app.use(express.json({ limit: '25mb' }));
 
 app.get('/', (req, res) => {
-  res.json({ ok: true, service: 'SpeakUp API', endpoints: ['/api/check-key', '/api/save-key', '/api/chat'] });
+  res.json({ ok: true, service: 'SpeakUp API', endpoints: ['/api/check-key', '/api/save-key', '/api/chat', '/api/transcribe'] });
 });
 
 app.use((req, res, next) => {
@@ -133,6 +135,52 @@ app.post('/api/chat', async (req, res) => {
     res.status(500).json({
       error: { message: 'Error de conexión. Intenta de nuevo.' },
     });
+  }
+});
+
+// Transcribir audio (nota de voz) usando Groq Whisper
+app.post('/api/transcribe', async (req, res) => {
+  const api = getApiKey();
+  if (!api) {
+    return res.status(401).json({ error: { message: 'Configura tu API key primero' } });
+  }
+
+  const { provider, key } = api;
+  if (provider !== 'groq') {
+    return res.status(400).json({ error: { message: 'La transcripción de voz requiere GROQ_API_KEY (Whisper).' } });
+  }
+
+  const { audioBase64, mimeType } = req.body || {};
+  if (!audioBase64 || typeof audioBase64 !== 'string') {
+    return res.status(400).json({ error: { message: 'audioBase64 requerido' } });
+  }
+
+  try {
+    const buffer = Buffer.from(audioBase64, 'base64');
+    const type = typeof mimeType === 'string' && mimeType ? mimeType : 'audio/webm';
+    const ext = type.includes('mp3') ? 'mp3' : type.includes('wav') ? 'wav' : type.includes('ogg') ? 'ogg' : 'webm';
+    const form = new FormData();
+    form.append('file', buffer, { filename: `audio.${ext}`, contentType: type });
+    form.append('model', 'whisper-large-v3-turbo');
+    form.append('response_format', 'json');
+    form.append('language', 'en');
+
+    const response = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
+      method: 'POST',
+      headers: { ...form.getHeaders(), 'Authorization': `Bearer ${key}` },
+      body: form,
+    });
+
+    const data = await response.json();
+    if (!response.ok) {
+      console.error('groq transcribe error:', response.status, data);
+      return res.status(response.status).json(data);
+    }
+
+    return res.json({ text: data.text || '' });
+  } catch (e) {
+    console.error('transcribe error:', e);
+    return res.status(500).json({ error: { message: 'Error transcribiendo audio' } });
   }
 });
 

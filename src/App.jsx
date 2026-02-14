@@ -5,8 +5,12 @@ import { Send, Mic, MicOff, Volume2, Loader2, Sparkles, Key, Settings2, User, Us
 const FEMALE_VOICES = ['zira', 'aria', 'samantha', 'karen', 'victoria', 'fiona', 'tessa', 'moira', 'kate', 'susan'];
 const MALE_VOICES = ['david', 'mark', 'alex', 'daniel', 'fred', 'oliver', 'george', 'russell'];
 
-function getVoiceForGender(gender) {
+function getVoiceForGender(gender, preferredName) {
   const voices = window.speechSynthesis?.getVoices() || [];
+  if (preferredName) {
+    const byName = voices.find(v => v.name === preferredName);
+    if (byName) return byName;
+  }
   const target = gender === 'male' ? MALE_VOICES : FEMALE_VOICES;
   const found = voices.find(v => target.some(t => v.name.toLowerCase().includes(t) && v.lang.startsWith('en')));
   return found || voices.find(v => v.lang.startsWith('en')) || voices[0];
@@ -26,11 +30,20 @@ export default function EnglishConversationApp() {
   const [voiceGender, setVoiceGender] = useState(() => 
     localStorage.getItem('english-conv-voice') || 'female'
   );
+  const [femaleVoiceName, setFemaleVoiceName] = useState(() =>
+    localStorage.getItem('english-conv-voice-female-name') || ''
+  );
+  const [maleVoiceName, setMaleVoiceName] = useState(() =>
+    localStorage.getItem('english-conv-voice-male-name') || ''
+  );
+  const [availableVoices, setAvailableVoices] = useState([]);
   const [showVoiceMenu, setShowVoiceMenu] = useState(false);
 
   const [messages, setMessages] = useState([
     {
+      id: 'm0',
       role: 'assistant',
+      kind: 'text',
       content: "Hi! I'm here to help you practice your English conversation skills. What would you like to talk about today? We can discuss hobbies, travel, work, daily life, or anything else you're interested in!"
     }
   ]);
@@ -41,7 +54,15 @@ export default function EnglishConversationApp() {
   const [voiceError, setVoiceError] = useState('');
   const recognitionRef = useRef(null);
   const committedTranscriptRef = useRef('');
+  const mediaRecorderRef = useRef(null);
+  const recordedChunksRef = useRef([]);
+  const pendingVoiceNoteTextRef = useRef('');
+  const messagesRef = useRef(messages);
   const messagesEndRef = useRef(null);
+  const [isRecordingAudio, setIsRecordingAudio] = useState(false);
+  const [recordSeconds, setRecordSeconds] = useState(0);
+  const recordTimerRef = useRef(null);
+  const [autoSpeak, setAutoSpeak] = useState(() => localStorage.getItem('english-conv-auto-speak') !== 'false');
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -49,6 +70,10 @@ export default function EnglishConversationApp() {
 
   useEffect(() => {
     scrollToBottom();
+  }, [messages]);
+
+  useEffect(() => {
+    messagesRef.current = messages;
   }, [messages]);
 
   useEffect(() => {
@@ -65,8 +90,31 @@ export default function EnglishConversationApp() {
   // Cargar voces del navegador (necesario en Chrome)
   useEffect(() => {
     if (window.speechSynthesis) {
-      window.speechSynthesis.getVoices();
-      window.speechSynthesis.onvoiceschanged = () => window.speechSynthesis.getVoices();
+      const load = () => {
+        const all = window.speechSynthesis.getVoices() || [];
+        const en = all.filter(v => (v.lang || '').toLowerCase().startsWith('en'));
+        setAvailableVoices(en.length ? en : all);
+        // Auto-selección si no hay nombres guardados
+        if (!femaleVoiceName && all.length) {
+          const v = getVoiceForGender('female');
+          if (v?.name) {
+            setFemaleVoiceName(v.name);
+            localStorage.setItem('english-conv-voice-female-name', v.name);
+          }
+        }
+        if (!maleVoiceName && all.length) {
+          const v = getVoiceForGender('male');
+          if (v?.name) {
+            setMaleVoiceName(v.name);
+            localStorage.setItem('english-conv-voice-male-name', v.name);
+          }
+        }
+      };
+      load();
+      window.speechSynthesis.onvoiceschanged = load;
+      return () => {
+        window.speechSynthesis.onvoiceschanged = null;
+      };
     }
   }, []);
 
@@ -140,92 +188,54 @@ export default function EnglishConversationApp() {
     }
   };
 
-  const handleSend = async () => {
-    if (!input.trim() || isLoading) return;
-
-    const userMessage = input.trim();
-    setInput('');
-    setMessages(prev => [...prev, { role: 'user', content: userMessage }]);
-    setIsLoading(true);
-
-    try {
-      const apiMessages = [
-        { role: 'system', content: "You are a friendly, patient English conversation partner helping someone practice their English. Have natural, engaging conversations on any topic they choose. Speak fluently and naturally, like a native speaker would. Keep your responses conversational (2-4 sentences typically) unless the topic requires more detail. Occasionally ask follow-up questions to keep the conversation flowing. Don't correct grammar unless it causes confusion - focus on natural conversation. Be encouraging and supportive." },
-        ...messages.map(msg => ({ role: msg.role, content: msg.content })),
-        { role: 'user', content: userMessage }
-      ];
-
-      if (!useBackend) {
-      const backendMsg = `⚠️ **Se necesita un backend** (la API no permite llamadas directas desde el navegador).
-
-**La forma más rápida – Groq (gratis, sin restricciones):**
-1. https://console.groq.com/keys – crea una API key (gratis, sin tarjeta)
-2. Render → tu servicio → Environment → añade \`GROQ_API_KEY\` = tu clave
-3. Redeploy → **Ajustes** → **Revisar conexión**
-
-**Alternativa – Gemini:** \`GEMINI_API_KEY\` en Render (aistudio.google.com/apikey)`;
-      setMessages(prev => [...prev, { role: 'assistant', content: backendMsg }]);
-      setIsLoading(false);
-      return;
-    }
-
-      const base = (apiBase || '').trim() || DEFAULT_BACKEND;
-      const chatUrl = `${base.replace(/\/$/, '')}/api/chat`;
-      const response = await fetch(chatUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: 'grok-3-mini', max_tokens: 1000, messages: apiMessages }),
-      });
-
-      const data = await response.json();
-      let assistantMessage = data.choices?.[0]?.message?.content || data.error?.message;
-      
-      if (!assistantMessage) {
-        assistantMessage = response.ok 
-          ? 'Sorry, I could not get a response.'
-          : (data.error?.message || `Error ${response.status}. Verifica tu API key.`);
-      }
-
-      if (!response.ok && (response.status === 400 || response.status === 403)) {
-        const apiMsg = data.error?.message || data.error?.error?.message || data.message || '';
-        assistantMessage = `⚠️ **Error ${response.status} – API key**
-
-${apiMsg ? `**Detalle:** ${apiMsg}\n\n` : ''}        **Solución más rápida – usa Groq:**
-1. https://console.groq.com/keys – crea una key (gratis, sin tarjeta)
-2. Render → Environment → añade \`GROQ_API_KEY\` = tu clave → redeploy`;
-      }
-
-      setMessages(prev => [...prev, { role: 'assistant', content: assistantMessage }]);
-    } catch (error) {
-      console.error('Error:', error);
-      const msg = error.message?.includes('Failed to fetch') || error.name === 'TypeError'
-        ? 'Error de conexión. ¿El backend está activo? Si usas Railway, verifica la URL.'
-        : "Sorry, I had trouble connecting. Could you try saying that again?";
-      setMessages(prev => [...prev, { role: 'assistant', content: msg }]);
-    } finally {
-      setIsLoading(false);
-    }
+  const handleSend = () => {
+    sendUserMessage(input);
   };
 
   const handleSpeak = (text) => {
-    if ('speechSynthesis' in window) {
-      window.speechSynthesis.cancel();
-      const utterance = new SpeechSynthesisUtterance(text);
-      utterance.lang = 'en-US';
-      utterance.rate = 0.92;
-      utterance.pitch = voiceGender === 'male' ? 0.9 : 1;
-      const voice = getVoiceForGender(voiceGender);
-      if (voice) utterance.voice = voice;
-      
-      utterance.onstart = () => setIsSpeaking(true);
-      utterance.onend = () => setIsSpeaking(false);
-      utterance.onerror = () => setIsSpeaking(false);
-      
+    if (!('speechSynthesis' in window)) return;
+    // Limpiar markdown: **text**, # headers, saltos de línea
+    const cleanText = (text || '')
+      .replace(/\*\*(.+?)\*\*/g, '$1')
+      .replace(/\*(.+?)\*/g, '$1')
+      .replace(/#{1,6}\s*/g, '')
+      .replace(/`([^`]+)`/g, '$1')
+      .replace(/\n+/g, ' ')
+      .trim();
+    if (!cleanText) return;
+
+    window.speechSynthesis.cancel();
+    window.speechSynthesis.resume?.(); // Chrome: reanudar si estaba pausado
+    // Forzar carga de voces (Chrome las carga tras interacción)
+    window.speechSynthesis.getVoices();
+
+    const utterance = new SpeechSynthesisUtterance(cleanText);
+    utterance.lang = 'en-US';
+    utterance.rate = 0.92;
+    utterance.pitch = voiceGender === 'male' ? 0.9 : 1;
+    utterance.volume = 1;
+    const preferredName = voiceGender === 'male' ? maleVoiceName : femaleVoiceName;
+    const voice = getVoiceForGender(voiceGender, preferredName);
+    if (voice) utterance.voice = voice;
+
+    utterance.onstart = () => setIsSpeaking(true);
+    utterance.onend = () => setIsSpeaking(false);
+    utterance.onerror = (e) => {
+      setIsSpeaking(false);
+      setVoiceError('No se pudo reproducir. Usa Chrome o Edge y verifica el volumen.');
+      setTimeout(() => setVoiceError(''), 4000);
+    };
+
+    try {
       window.speechSynthesis.speak(utterance);
+    } catch (err) {
+      setIsSpeaking(false);
+      setVoiceError('Tu navegador no soporta lectura en voz alta. Usa Chrome o Edge.');
+      setTimeout(() => setVoiceError(''), 4000);
     }
   };
 
-  const startVoiceInput = () => {
+  const startVoiceInput = async () => {
     if (!('webkitSpeechRecognition' in window || 'SpeechRecognition' in window)) {
       setVoiceError('Tu navegador no soporta voz. Usa Chrome o Edge.');
       setTimeout(() => setVoiceError(''), 4000);
@@ -233,10 +243,45 @@ ${apiMsg ? `**Detalle:** ${apiMsg}\n\n` : ''}        **Solución más rápida �
     }
     if (isListening) {
       recognitionRef.current?.stop();
+      try {
+        mediaRecorderRef.current?.stop();
+      } catch {}
       return;
     }
 
     setVoiceError('');
+    pendingVoiceNoteTextRef.current = '';
+
+    // Iniciar grabación de audio (nota de voz estilo WhatsApp)
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      recordedChunksRef.current = [];
+      const recorder = new MediaRecorder(stream);
+      recorder.ondataavailable = (e) => {
+        if (e.data && e.data.size > 0) recordedChunksRef.current.push(e.data);
+      };
+      recorder.onstop = () => {
+        // parar tracks
+        stream.getTracks().forEach(t => t.stop());
+        const blob = new Blob(recordedChunksRef.current, { type: recorder.mimeType || 'audio/webm' });
+        const audioUrl = URL.createObjectURL(blob);
+        // Mensaje tipo WhatsApp: audio + (transcribiendo...)
+        const audioId = `a-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+        setMessages(prev => [...prev, { id: audioId, role: 'user', kind: 'audio', audioUrl, content: 'Transcribing…' }]);
+        // Transcribir en backend (IA “escucha” tu voz)
+        transcribeAndSend(blob, recorder.mimeType || 'audio/webm', audioId);
+      };
+      mediaRecorderRef.current = recorder;
+      recorder.start();
+      setIsRecordingAudio(true);
+      setRecordSeconds(0);
+      recordTimerRef.current = setInterval(() => setRecordSeconds(s => s + 1), 1000);
+    } catch (e) {
+      setVoiceError('No pude acceder al micrófono para grabar audio. Revisa permisos.');
+      setTimeout(() => setVoiceError(''), 5000);
+      return;
+    }
+
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     const recognition = new SpeechRecognition();
     recognition.lang = 'en-US';
@@ -248,7 +293,21 @@ ${apiMsg ? `**Detalle:** ${apiMsg}\n\n` : ''}        **Solución más rápida �
       setIsListening(true);
       committedTranscriptRef.current = '';
     };
-    recognition.onend = () => setIsListening(false);
+    recognition.onend = () => {
+      setIsListening(false);
+      setIsRecordingAudio(false);
+      if (recordTimerRef.current) {
+        clearInterval(recordTimerRef.current);
+        recordTimerRef.current = null;
+      }
+      // capturar el texto final para la nota de voz
+      pendingVoiceNoteTextRef.current = (committedTranscriptRef.current || '').trim();
+      try {
+        if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+          mediaRecorderRef.current.stop();
+        }
+      } catch {}
+    };
 
     recognition.onresult = (event) => {
       let interim = '';
@@ -257,12 +316,25 @@ ${apiMsg ? `**Detalle:** ${apiMsg}\n\n` : ''}        **Solución más rápida �
         const text = r[0].transcript.trim();
         if (!text) continue;
         if (r.isFinal) {
-          committedTranscriptRef.current += (committedTranscriptRef.current ? ' ' : '') + text;
+          const committed = committedTranscriptRef.current.trim();
+          const lowerCommitted = committed.toLowerCase();
+          const lowerText = text.toLowerCase();
+          // Evitar duplicados: no agregar si ya está al final o es repetición
+          const yaAlFinal = lowerCommitted.endsWith(lowerText) || lowerCommitted === lowerText;
+          const esRepeticionPalabra = committed && lowerText.split(/\s+/).length === 1 &&
+            lowerCommitted.split(/\s+/).pop() === lowerText;
+          if (!yaAlFinal && !esRepeticionPalabra) {
+            committedTranscriptRef.current = committed ? `${committed} ${text}` : text;
+          }
         } else {
-          interim = text;
+          // Interim: reemplazar (no acumular) y descartar si repite lo ya confirmado
+          const committed = committedTranscriptRef.current.trim();
+          if (!committed.toLowerCase().endsWith(text.toLowerCase())) {
+            interim = text;
+          }
         }
       }
-      const full = committedTranscriptRef.current + (interim ? ' ' + interim : '');
+      const full = committedTranscriptRef.current.trim() + (interim ? ' ' + interim : '');
       setInput(full.trim());
     };
 
@@ -284,10 +356,131 @@ ${apiMsg ? `**Detalle:** ${apiMsg}\n\n` : ''}        **Solución más rápida �
     recognition.start();
   };
 
+  const blobToBase64 = (blob) => new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      const res = reader.result;
+      const base64 = typeof res === 'string' ? res.split(',')[1] : '';
+      resolve(base64 || '');
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+
+  const transcribeAndSend = async (blob, mimeType, audioMessageId) => {
+    try {
+      const base = (apiBase || '').trim() || DEFAULT_BACKEND;
+      const url = `${base.replace(/\/$/, '')}/api/transcribe`;
+      const audioBase64 = await blobToBase64(blob);
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ audioBase64, mimeType }),
+      });
+      const data = await res.json();
+      const text = (data.text || data.error?.message || '').trim();
+      if (!res.ok) throw new Error(text || `Error ${res.status}`);
+      if (!text) throw new Error('No se pudo transcribir');
+
+      // Actualizar el bubble del audio con la transcripción
+      setMessages(prev => prev.map(m => m.id === audioMessageId ? { ...m, content: text } : m));
+
+      // Enviar a la IA sin duplicar el mensaje del usuario (ya está en el chat)
+      await sendUserMessage(text, { skipAppend: true });
+    } catch (e) {
+      setMessages(prev => prev.map(m => m.id === audioMessageId ? { ...m, content: `Transcription failed: ${e.message || e}` } : m));
+    }
+  };
+
+  const sendUserMessage = async (userText, uiMessageOverride) => {
+    const options = uiMessageOverride && typeof uiMessageOverride === 'object' && !Array.isArray(uiMessageOverride) ? uiMessageOverride : null;
+    const skipAppend = !!options?.skipAppend;
+    const uiOverride = options?.uiMessageOverride;
+
+    if (!userText?.trim()) return;
+    if (isLoading) {
+      console.warn('sendUserMessage: ya hay una solicitud en curso');
+      return;
+    }
+    const userMessage = userText.trim();
+    setInput('');
+
+    const uiMsg = uiOverride || { id: `u-${Date.now()}-${Math.random().toString(16).slice(2)}`, role: 'user', content: userMessage, kind: 'text' };
+    let msgs = messagesRef.current.map(m => ({ role: m.role, content: typeof m.content === 'string' ? m.content : '' }));
+    if (skipAppend) {
+      const lastUserIdx = [...msgs].reverse().findIndex(m => m.role === 'user');
+      if (lastUserIdx !== -1) {
+        const idx = msgs.length - 1 - lastUserIdx;
+        msgs[idx] = { role: 'user', content: userMessage };
+      } else {
+        msgs.push({ role: 'user', content: userMessage });
+      }
+    } else {
+      msgs.push({ role: 'user', content: userMessage });
+    }
+    const historyForApi = [
+      { role: 'system', content: "You are a friendly, patient English conversation partner helping someone practice their English. Have natural, engaging conversations on any topic they choose. Speak fluently and naturally, like a native speaker would. Keep your responses conversational (2-4 sentences typically) unless the topic requires more detail. Occasionally ask follow-up questions to keep the conversation flowing. Don't correct grammar unless it causes confusion - focus on natural conversation. Be encouraging and supportive." },
+      ...msgs
+    ];
+
+    if (!skipAppend) setMessages(prev => [...prev, uiMsg]);
+    setIsLoading(true);
+
+    try {
+      if (!useBackend) {
+        const backendMsg = `⚠️ **Se necesita un backend** (la API no permite llamadas directas desde el navegador).
+
+**La forma más rápida – Groq (gratis, sin restricciones):**
+1. https://console.groq.com/keys – crea una API key (gratis, sin tarjeta)
+2. Render → tu servicio → Environment → añade \`GROQ_API_KEY\` = tu clave
+3. Redeploy → **Ajustes** → **Revisar conexión**
+
+**Alternativa – Gemini:** \`GEMINI_API_KEY\` en Render (aistudio.google.com/apikey)`;
+        setMessages(prev => [...prev, { role: 'assistant', content: backendMsg, kind: 'text' }]);
+        return;
+      }
+
+      const base = (apiBase || '').trim() || DEFAULT_BACKEND;
+      const chatUrl = `${base.replace(/\/$/, '')}/api/chat`;
+      const response = await fetch(chatUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: 'grok-3-mini', max_tokens: 1000, messages: historyForApi }),
+      });
+
+      const data = await response.json();
+      let assistantMessage = data.choices?.[0]?.message?.content || data.error?.message;
+      if (!assistantMessage) {
+        assistantMessage = response.ok
+          ? 'Sorry, I could not get a response.'
+          : (data.error?.message || `Error ${response.status}. Verifica tu API key.`);
+      }
+      if (!response.ok && (response.status === 400 || response.status === 403)) {
+        const apiMsg = data.error?.message || data.error?.error?.message || data.message || '';
+        assistantMessage = `⚠️ **Error ${response.status} – API key**
+
+${apiMsg ? `**Detalle:** ${apiMsg}\n\n` : ''}**Solución más rápida – usa Groq:**
+1. https://console.groq.com/keys – crea una key (gratis, sin tarjeta)
+2. Render → Environment → añade \`GROQ_API_KEY\` = tu clave → redeploy`;
+      }
+
+      const assistantObj = { id: `a-${Date.now()}-${Math.random().toString(16).slice(2)}`, role: 'assistant', content: assistantMessage, kind: 'text' };
+      setMessages(prev => [...prev, assistantObj]);
+      if (autoSpeak) handleSpeak(assistantMessage);
+    } catch (error) {
+      const msg = error.message?.includes('Failed to fetch') || error.name === 'TypeError'
+        ? 'Error de conexión. ¿El backend está activo? Verifica la URL en Ajustes.'
+        : "Sorry, I had trouble connecting. Could you try saying that again?";
+      setMessages(prev => [...prev, { id: `e-${Date.now()}-${Math.random().toString(16).slice(2)}`, role: 'assistant', content: msg, kind: 'text' }]);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   const handleKeyPress = (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      handleSend();
+      sendUserMessage(input);
     }
   };
 
@@ -368,23 +561,86 @@ ${apiMsg ? `**Detalle:** ${apiMsg}\n\n` : ''}        **Solución más rápida �
                 </p>
               </div>
             </div>
-            {/* Selector de voz */}
-            <div className="relative">
+            {/* Selector de voz: hablar con mujer u hombre */}
+            <div className="relative flex items-center gap-2">
+              <span className="text-xs text-slate-500 hidden sm:inline">Talk with:</span>
+              <div className="flex rounded-lg border border-slate-200 overflow-hidden bg-slate-50/80">
+                <button
+                  onClick={() => handleVoiceChange('female')}
+                  className={`flex items-center gap-2 px-3 py-2 text-sm font-medium transition-colors ${
+                    voiceGender === 'female'
+                      ? 'bg-slate-900 text-white'
+                      : 'text-slate-600 hover:bg-slate-100'
+                  }`}
+                  title="Voz de mujer"
+                >
+                  <UserCircle size={18} />
+                  <span>Woman</span>
+                </button>
+                <button
+                  onClick={() => handleVoiceChange('male')}
+                  className={`flex items-center gap-2 px-3 py-2 text-sm font-medium transition-colors ${
+                    voiceGender === 'male'
+                      ? 'bg-slate-900 text-white'
+                      : 'text-slate-600 hover:bg-slate-100'
+                  }`}
+                  title="Voz de hombre"
+                >
+                  <User size={18} />
+                  <span>Man</span>
+                </button>
+              </div>
               <button
                 onClick={() => setShowVoiceMenu(!showVoiceMenu)}
-                className="flex items-center gap-2 px-3 py-2 rounded-lg border border-slate-200 bg-slate-50/80 hover:bg-slate-100 text-slate-700 text-sm font-medium transition-colors"
-                title="Voice settings"
+                className="p-2 rounded-lg border border-slate-200 bg-slate-50/80 hover:bg-slate-100 text-slate-600"
+                title="Ajustes"
               >
-                <Settings2 size={16} />
-                <span className="hidden sm:inline">{voiceGender === 'male' ? 'Male voice' : 'Female voice'}</span>
-                {voiceGender === 'male' ? <User size={16} /> : <UserCircle size={16} />}
+                <Settings2 size={18} />
               </button>
               {showVoiceMenu && (
                 <>
                   <div className="fixed inset-0 z-10" onClick={() => setShowVoiceMenu(false)} />
-                  <div className="absolute right-0 mt-1 py-2 w-64 bg-white rounded-xl shadow-lg border border-slate-200 z-20">
+                  <div className="absolute right-0 top-full mt-1 py-2 w-64 bg-white rounded-xl shadow-lg border border-slate-200 z-20">
                     <div className="px-4 py-2 border-b border-slate-100">
-                      <label className="text-xs text-slate-500 font-medium block mb-1">Backend URL (Render / Railway)</label>
+                      <p className="text-xs text-slate-500 font-medium mb-2">Voces (Text-to-Speech)</p>
+                      <label className="text-[11px] text-slate-500 block mb-1">Voz mujer</label>
+                      <select
+                        value={femaleVoiceName}
+                        onChange={(e) => {
+                          const v = e.target.value;
+                          setFemaleVoiceName(v);
+                          localStorage.setItem('english-conv-voice-female-name', v);
+                        }}
+                        className="w-full px-2 py-1.5 text-xs border border-slate-200 rounded-lg bg-white focus:outline-none focus:ring-1 focus:ring-slate-400"
+                      >
+                        <option value="">Auto</option>
+                        {availableVoices.map(v => (
+                          <option key={`f-${v.name}`} value={v.name}>{v.name}</option>
+                        ))}
+                      </select>
+                      <label className="text-[11px] text-slate-500 block mb-1 mt-2">Voz hombre</label>
+                      <select
+                        value={maleVoiceName}
+                        onChange={(e) => {
+                          const v = e.target.value;
+                          setMaleVoiceName(v);
+                          localStorage.setItem('english-conv-voice-male-name', v);
+                        }}
+                        className="w-full px-2 py-1.5 text-xs border border-slate-200 rounded-lg bg-white focus:outline-none focus:ring-1 focus:ring-slate-400"
+                      >
+                        <option value="">Auto</option>
+                        {availableVoices.map(v => (
+                          <option key={`m-${v.name}`} value={v.name}>{v.name}</option>
+                        ))}
+                      </select>
+                      {availableVoices.length <= 1 && (
+                        <p className="mt-2 text-[11px] text-amber-700">
+                          Solo hay 1 voz disponible en tu sistema, por eso “Man/Woman” suenan igual. Instala más voces en Windows (Configuración → Hora e idioma → Voz).
+                        </p>
+                      )}
+                    </div>
+                    <div className="px-4 py-2">
+                      <label className="text-xs text-slate-500 font-medium block mb-1">Backend URL</label>
                       <input
                         type="url"
                         value={apiBase}
@@ -410,20 +666,6 @@ ${apiMsg ? `**Detalle:** ${apiMsg}\n\n` : ''}        **Solución más rápida �
                         {useBackend ? '✓ Conectado' : 'Revisar conexión'}
                       </button>
                     </div>
-                    <button
-                      onClick={() => handleVoiceChange('female')}
-                      className={`w-full px-4 py-2.5 text-left text-sm flex items-center gap-3 hover:bg-slate-50 ${voiceGender === 'female' ? 'bg-slate-50 text-slate-900 font-medium' : 'text-slate-600'}`}
-                    >
-                      <UserCircle size={18} />
-                      Female voice
-                    </button>
-                    <button
-                      onClick={() => handleVoiceChange('male')}
-                      className={`w-full px-4 py-2.5 text-left text-sm flex items-center gap-3 hover:bg-slate-50 ${voiceGender === 'male' ? 'bg-slate-50 text-slate-900 font-medium' : 'text-slate-600'}`}
-                    >
-                      <User size={18} />
-                      Male voice
-                    </button>
                   </div>
                 </>
               )}
@@ -435,9 +677,9 @@ ${apiMsg ? `**Detalle:** ${apiMsg}\n\n` : ''}        **Solución más rápida �
       {/* Chat container */}
       <main className="flex-1 flex flex-col max-w-3xl w-full mx-auto px-4 sm:px-6 py-6">
         <div className="flex-1 overflow-y-auto space-y-6 chat-scrollbar min-h-0">
-          {messages.map((message, index) => (
+          {messages.map((message) => (
             <div
-              key={index}
+              key={message.id || `${message.role}-${message.content?.slice(0, 20)}`}
               className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}
             >
               <div className={`flex items-start gap-3 max-w-[90%] ${message.role === 'user' ? 'flex-row-reverse' : ''}`}>
@@ -455,7 +697,16 @@ ${apiMsg ? `**Detalle:** ${apiMsg}\n\n` : ''}        **Solución más rápida �
                       : 'bg-white text-slate-800 border border-slate-200/80 shadow-sm rounded-bl-md'
                   }`}
                 >
-                  <p className="whitespace-pre-wrap text-[15px] leading-relaxed">{message.content}</p>
+                  {message.kind === 'audio' && message.audioUrl ? (
+                    <div className="space-y-2">
+                      <audio controls src={message.audioUrl} className="w-full" />
+                      <p className="whitespace-pre-wrap text-[14px] leading-relaxed text-slate-700">
+                        {message.content}
+                      </p>
+                    </div>
+                  ) : (
+                    <p className="whitespace-pre-wrap text-[15px] leading-relaxed">{message.content}</p>
+                  )}
                   {message.role === 'assistant' && (
                     <button
                       onClick={() => handleSpeak(message.content)}
@@ -497,7 +748,7 @@ ${apiMsg ? `**Detalle:** ${apiMsg}\n\n` : ''}        **Solución más rápida �
                   ? 'bg-red-500 hover:bg-red-600 text-white mic-recording'
                   : 'bg-slate-100 hover:bg-slate-200 text-slate-600 hover:text-slate-800'
               }`}
-              title={isListening ? 'Click to stop recording' : 'Hold or click to speak'}
+              title={isListening ? 'Soltar para enviar' : 'Mantén para grabar'}
               disabled={isLoading}
             >
               {isListening ? <MicOff size={20} strokeWidth={2} /> : <Mic size={20} strokeWidth={2} />}
@@ -519,9 +770,9 @@ ${apiMsg ? `**Detalle:** ${apiMsg}\n\n` : ''}        **Solución más rápida �
               <Send size={20} strokeWidth={2} />
             </button>
           </div>
-          {(voiceError || isListening) && (
+          {(voiceError || isListening || isRecordingAudio) && (
             <p className={`text-xs text-center mt-2 ${voiceError ? 'text-red-600' : 'text-slate-500'}`}>
-              {voiceError || 'Recording... click mic again to stop'}
+              {voiceError || (isRecordingAudio ? `Grabando nota de voz… ${String(Math.floor(recordSeconds/60)).padStart(2,'0')}:${String(recordSeconds%60).padStart(2,'0')} (suelta para enviar)` : 'Recording… suelta para enviar')}
             </p>
           )}
           {!voiceError && !isListening && (
