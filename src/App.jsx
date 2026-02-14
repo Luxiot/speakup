@@ -15,8 +15,9 @@ function getVoiceForGender(gender) {
 export default function EnglishConversationApp() {
   const [hasApiKey, setHasApiKey] = useState(null);
   const [useBackend, setUseBackend] = useState(null);
+  const DEFAULT_BACKEND = 'https://speakup-bf52.onrender.com';
   const [apiBase, setApiBase] = useState(() => 
-    import.meta.env.VITE_API_URL || localStorage.getItem('english-conv-api-url') || ''
+    import.meta.env.VITE_API_URL || localStorage.getItem('english-conv-api-url') || DEFAULT_BACKEND
   );
   const [apiKeyInput, setApiKeyInput] = useState('');
   const [savingKey, setSavingKey] = useState(false);
@@ -49,6 +50,12 @@ export default function EnglishConversationApp() {
   useEffect(() => {
     scrollToBottom();
   }, [messages]);
+
+  useEffect(() => {
+    if (apiBase && !localStorage.getItem('english-conv-api-url')) {
+      localStorage.setItem('english-conv-api-url', apiBase);
+    }
+  }, [apiBase]);
 
   // Limpiar reconocimiento al desmontar
   useEffect(() => {
