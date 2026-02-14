@@ -478,13 +478,22 @@ export default function EnglishConversationApp() {
 
       const base = (apiBase || '').trim() || DEFAULT_BACKEND;
       const chatUrl = `${base.replace(/\/$/, '')}/api/chat`;
+      const controller = new AbortController();
+      const t = setTimeout(() => controller.abort(), 45000);
       const response = await fetch(chatUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ model: 'grok-3-mini', max_tokens: 1000, messages: historyForApi }),
+        signal: controller.signal,
       });
-
-      const data = await response.json();
+      clearTimeout(t);
+      let data = null;
+      try {
+        data = await response.json();
+      } catch {
+        const raw = await response.text().catch(() => '');
+        throw new Error(raw ? raw.slice(0, 200) : `Respuesta inválida (HTTP ${response.status})`);
+      }
       let assistantMessage = data.choices?.[0]?.message?.content || data.error?.message;
       if (!assistantMessage) {
         assistantMessage = response.ok
@@ -504,9 +513,10 @@ ${apiMsg ? `**Detalle:** ${apiMsg}\n\n` : ''}**Solución más rápida – usa Gr
       setMessages(prev => [...prev, assistantObj]);
       if (autoSpeak) handleSpeak(assistantMessage);
     } catch (error) {
+      const isAbort = error?.name === 'AbortError';
       const msg = error.message?.includes('Failed to fetch') || error.name === 'TypeError'
         ? 'Error de conexión. ¿El backend está activo? Verifica la URL en Ajustes.'
-        : "Sorry, I had trouble connecting. Could you try saying that again?";
+        : (isAbort ? 'Timeout esperando respuesta de la IA. Intenta de nuevo.' : "Sorry, I had trouble connecting. Could you try saying that again?");
       setMessages(prev => [...prev, { id: `e-${Date.now()}-${Math.random().toString(16).slice(2)}`, role: 'assistant', content: msg, kind: 'text' }]);
     } finally {
       setIsLoading(false);
