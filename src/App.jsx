@@ -5,15 +5,24 @@ import { Send, Mic, MicOff, Volume2, Loader2, Sparkles, Key, Settings2, User, Us
 const FEMALE_VOICES = ['zira', 'aria', 'samantha', 'karen', 'victoria', 'fiona', 'tessa', 'moira', 'kate', 'susan'];
 const MALE_VOICES = ['david', 'mark', 'alex', 'daniel', 'fred', 'oliver', 'george', 'russell'];
 
-function getVoiceForGender(gender, preferredName) {
+function getVoiceForGender(gender, preferredName, excludeName) {
   const voices = window.speechSynthesis?.getVoices() || [];
   if (preferredName) {
     const byName = voices.find(v => v.name === preferredName);
     if (byName) return byName;
   }
   const target = gender === 'male' ? MALE_VOICES : FEMALE_VOICES;
-  const found = voices.find(v => target.some(t => v.name.toLowerCase().includes(t) && v.lang.startsWith('en')));
-  return found || voices.find(v => v.lang.startsWith('en')) || voices[0];
+  const isEn = (v) => (v.lang || '').toLowerCase().startsWith('en');
+  const matchesTarget = (v) => isEn(v) && target.some(t => v.name.toLowerCase().includes(t));
+
+  let found = voices.find(matchesTarget);
+  if (found && excludeName && found.name === excludeName) {
+    found = voices.find(v => matchesTarget(v) && v.name !== excludeName);
+  }
+  if (found) return found;
+
+  const anyEn = voices.find(v => isEn(v) && (!excludeName || v.name !== excludeName));
+  return anyEn || voices[0];
 }
 
 export default function EnglishConversationApp() {
@@ -96,14 +105,14 @@ export default function EnglishConversationApp() {
         setAvailableVoices(en.length ? en : all);
         // Auto-selección si no hay nombres guardados
         if (!femaleVoiceName && all.length) {
-          const v = getVoiceForGender('female');
+          const v = getVoiceForGender('female', '', '');
           if (v?.name) {
             setFemaleVoiceName(v.name);
             localStorage.setItem('english-conv-voice-female-name', v.name);
           }
         }
         if (!maleVoiceName && all.length) {
-          const v = getVoiceForGender('male');
+          const v = getVoiceForGender('male', '', femaleVoiceName);
           if (v?.name) {
             setMaleVoiceName(v.name);
             localStorage.setItem('english-conv-voice-male-name', v.name);
@@ -121,6 +130,21 @@ export default function EnglishConversationApp() {
   const handleVoiceChange = (gender) => {
     setVoiceGender(gender);
     localStorage.setItem('english-conv-voice', gender);
+    if (availableVoices.length > 1) {
+      if (gender === 'male') {
+        const pick = getVoiceForGender('male', maleVoiceName, femaleVoiceName);
+        if (pick?.name && pick.name !== maleVoiceName) {
+          setMaleVoiceName(pick.name);
+          localStorage.setItem('english-conv-voice-male-name', pick.name);
+        }
+      } else {
+        const pick = getVoiceForGender('female', femaleVoiceName, maleVoiceName);
+        if (pick?.name && pick.name !== femaleVoiceName) {
+          setFemaleVoiceName(pick.name);
+          localStorage.setItem('english-conv-voice-female-name', pick.name);
+        }
+      }
+    }
     setShowVoiceMenu(false);
   };
 
@@ -215,7 +239,8 @@ export default function EnglishConversationApp() {
     utterance.pitch = voiceGender === 'male' ? 0.9 : 1;
     utterance.volume = 1;
     const preferredName = voiceGender === 'male' ? maleVoiceName : femaleVoiceName;
-    const voice = getVoiceForGender(voiceGender, preferredName);
+    const excludeName = voiceGender === 'male' ? femaleVoiceName : maleVoiceName;
+    const voice = getVoiceForGender(voiceGender, preferredName, excludeName);
     if (voice) utterance.voice = voice;
 
     utterance.onstart = () => setIsSpeaking(true);
@@ -372,12 +397,22 @@ export default function EnglishConversationApp() {
       const base = (apiBase || '').trim() || DEFAULT_BACKEND;
       const url = `${base.replace(/\/$/, '')}/api/transcribe`;
       const audioBase64 = await blobToBase64(blob);
+      const controller = new AbortController();
+      const t = setTimeout(() => controller.abort(), 45000);
       const res = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ audioBase64, mimeType }),
+        signal: controller.signal,
       });
-      const data = await res.json();
+      clearTimeout(t);
+      let data = null;
+      try {
+        data = await res.json();
+      } catch {
+        const raw = await res.text().catch(() => '');
+        throw new Error(raw ? raw.slice(0, 200) : `Respuesta inválida (HTTP ${res.status})`);
+      }
       const text = (data.text || data.error?.message || '').trim();
       if (!res.ok) throw new Error(text || `Error ${res.status}`);
       if (!text) throw new Error('No se pudo transcribir');
@@ -388,7 +423,8 @@ export default function EnglishConversationApp() {
       // Enviar a la IA sin duplicar el mensaje del usuario (ya está en el chat)
       await sendUserMessage(text, { skipAppend: true });
     } catch (e) {
-      setMessages(prev => prev.map(m => m.id === audioMessageId ? { ...m, content: `Transcription failed: ${e.message || e}` } : m));
+      const reason = e?.name === 'AbortError' ? 'Timeout transcribiendo (backend tardó demasiado)' : (e.message || String(e));
+      setMessages(prev => prev.map(m => m.id === audioMessageId ? { ...m, content: `Transcription failed: ${reason}` } : m));
     }
   };
 
