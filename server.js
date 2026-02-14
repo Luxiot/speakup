@@ -8,6 +8,11 @@ const app = express();
 const PORT = process.env.PORT || 3001;
 
 app.use(express.json());
+
+app.get('/', (req, res) => {
+  res.json({ ok: true, service: 'SpeakUp API', endpoints: ['/api/check-key', '/api/save-key', '/api/chat'] });
+});
+
 app.use((req, res, next) => {
   res.set('Access-Control-Allow-Origin', '*');
   res.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
