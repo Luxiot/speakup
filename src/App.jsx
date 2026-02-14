@@ -156,7 +156,7 @@ export default function EnglishConversationApp() {
       const response = await fetch(chatUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: 'grok-2', max_tokens: 1000, messages: apiMessages }),
+        body: JSON.stringify({ model: 'grok-3-mini', max_tokens: 1000, messages: apiMessages }),
       });
 
       const data = await response.json();
@@ -166,6 +166,14 @@ export default function EnglishConversationApp() {
         assistantMessage = response.ok 
           ? 'Sorry, I could not get a response.'
           : (data.error?.message || `Error ${response.status}. Verifica tu API key.`);
+      }
+
+      if (!response.ok && response.status === 400) {
+        assistantMessage = `⚠️ **Error 400 – API key inválida o sin créditos**
+
+• https://console.x.ai/team/default/api-keys – revisa tu API key
+• Asegúrate de tener créditos en tu cuenta xAI
+• En Render → Environment → verifica XAI_API_KEY (sin espacios)`;
       }
 
       setMessages(prev => [...prev, { role: 'assistant', content: assistantMessage }]);
