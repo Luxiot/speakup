@@ -157,12 +157,12 @@ app.post('/api/transcribe', async (req, res) => {
 
   try {
     const buffer = Buffer.from(audioBase64, 'base64');
-    // Normalizar mimeType (MediaRecorder suele enviar "audio/webm;codecs=opus")
     const rawType = (typeof mimeType === 'string' && mimeType ? mimeType : 'audio/webm').trim();
     const type = rawType.split(';')[0].trim() || 'audio/webm';
     const ext = type.includes('mp3') ? 'mp3' : type.includes('wav') ? 'wav' : type.includes('ogg') ? 'ogg' : 'webm';
     const form = new FormData();
-    form.append('file', buffer, { filename: `audio.${ext}`, contentType: type });
+    // Sin contentType para evitar conflictos con Groq
+    form.append('file', buffer, { filename: `audio.${ext}` });
     form.append('model', 'whisper-large-v3-turbo');
     form.append('response_format', 'json');
     form.append('language', 'en');
@@ -176,7 +176,8 @@ app.post('/api/transcribe', async (req, res) => {
     const data = await response.json();
     if (!response.ok) {
       console.error('groq transcribe error:', response.status, data);
-      return res.status(response.status).json(data);
+      const errMsg = data?.error?.message || data?.message || JSON.stringify(data);
+      return res.status(response.status).json({ error: { message: errMsg }, text: '' });
     }
 
     return res.json({ text: data.text || '' });
